@@ -77,19 +77,23 @@ import androidx.compose.ui.unit.dp
 import com.nars.kointerpreter.Mode
 import com.nars.kointerpreter.audio.MicDevice
 import com.nars.kointerpreter.audio.MicKind
+import com.nars.kointerpreter.data.Lang
+import androidx.compose.material.icons.filled.RecordVoiceOver
 
 /**
- * Front-page panel with everything you change often: listening mode and
- * microphone. It folds into a one-line summary while listening so the
+ * Front-page panel with everything you change often: listening mode, language
+ * and microphone. It folds into a one-line summary while listening so the
  * transcript gets the room, and unfolds again when you stop (or tap it).
  */
 @Composable
 fun SetupPanel(
     mode: Mode,
+    listen: Lang,
     mics: List<MicDevice>,
     micKey: String,
     listening: Boolean,
     onMode: (Mode) -> Unit,
+    onListen: (Lang) -> Unit,
     onMic: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -125,7 +129,7 @@ fun SetupPanel(
                             Text("Listening setup", style = MaterialTheme.typography.titleSmall)
                         }
                     } else {
-                        Summary(mode, mics, micKey)
+                        Summary(mode, listen, mics, micKey)
                     }
                 }
                 Icon(
@@ -152,6 +156,29 @@ fun SetupPanel(
                         onSelect = { onMode(Mode.entries[it]) },
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
+                    Label("Who's speaking")
+                    SlidingSegmented(
+                        options = listOf(
+                            SegOption("한국어", Icons.Filled.RecordVoiceOver),
+                            SegOption("English", Icons.Filled.RecordVoiceOver),
+                        ),
+                        selected = Lang.entries.indexOf(listen),
+                        onSelect = { onListen(Lang.entries[it]) },
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    AnimatedContent(
+                        targetState = listen,
+                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
+                        label = "listenHint",
+                    ) { l ->
+                        Hint(
+                            when (l) {
+                                Lang.KOREAN -> "Listens for Korean and translates it to English. Switch to English when the other person talks."
+                                Lang.ENGLISH -> "Listens for Indian English and translates it to Korean. Switch to 한국어 when the other person talks."
+                            }
+                        )
+                    }
+
                     Label("Microphone")
                     MicRow(mics, micKey, onMic)
                     AnimatedVisibility(
@@ -410,9 +437,9 @@ private fun MicCard(
     }
 }
 
-/** Folded header: "Continuous · DJI Mic 2". */
+/** Folded header: "Continuous · 한국어 · DJI Mic 2". */
 @Composable
-private fun Summary(mode: Mode, mics: List<MicDevice>, micKey: String) {
+private fun Summary(mode: Mode, listen: Lang, mics: List<MicDevice>, micKey: String) {
     val mic = mics.firstOrNull { it.key == micKey }
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
@@ -422,6 +449,10 @@ private fun Summary(mode: Mode, mics: List<MicDevice>, micKey: String) {
         SummaryPill(
             if (mode == Mode.CONTINUOUS) Icons.Filled.Autorenew else Icons.Filled.TouchApp,
             if (mode == Mode.CONTINUOUS) "Continuous" else "Push to talk",
+        )
+        SummaryPill(
+            Icons.Filled.RecordVoiceOver,
+            if (listen == Lang.KOREAN) "한국어" else "English",
         )
         SummaryPill(
             when {

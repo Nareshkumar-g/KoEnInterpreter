@@ -88,7 +88,7 @@ fun SettingsScreen(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 SwitchRow(
                     title = "Prefer on-device recognition",
-                    subtitle = "Works offline and keeps audio on the phone. Korean must be downloaded in your phone's speech recognition settings. Usually a little less accurate.",
+                    subtitle = "Works offline and keeps audio on the phone. Korean and English (India) must be downloaded in your tablet's speech recognition settings. Usually a little less accurate.",
                     checked = settings.onDeviceRecognition,
                     onChecked = { v -> onChange { it.copy(onDeviceRecognition = v) } },
                 )

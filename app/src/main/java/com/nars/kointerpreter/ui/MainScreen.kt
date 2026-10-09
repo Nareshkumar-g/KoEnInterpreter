@@ -52,6 +52,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
@@ -93,6 +97,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.res.painterResource
 import com.nars.kointerpreter.R
+import com.nars.kointerpreter.data.Lang
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -113,6 +118,7 @@ import com.nars.kointerpreter.Entry
 import com.nars.kointerpreter.EntryStatus
 import com.nars.kointerpreter.InterpreterViewModel
 import com.nars.kointerpreter.Mode
+import com.nars.kointerpreter.RecordingEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -147,6 +153,30 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
 
     fun startWithPermissions() {
         if (hasMic()) vm.startContinuous() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    // "Recording saved" message with a Share button.
+    LaunchedEffect(Unit) {
+        vm.recordings.collect { event ->
+            when (event) {
+                is RecordingEvent.Saved -> {
+                    val secs = (event.durationMs / 1000).coerceAtLeast(1)
+                    val r = snackbar.showSnackbar(
+                        "Recording saved (${secs / 60}:${"%02d".format(secs % 60)}) to ${event.folder}",
+                        actionLabel = "Share",
+                        withDismissAction = true,
+                        duration = SnackbarDuration.Long,
+                    )
+                    if (r == SnackbarResult.ActionPerformed) {
+                        val send = Intent(Intent.ACTION_SEND).setType("audio/wav")
+                            .putExtra(Intent.EXTRA_STREAM, event.uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        runCatching { context.startActivity(Intent.createChooser(send, "Share recording")) }
+                    }
+                }
+                is RecordingEvent.Failed -> snackbar.showSnackbar(event.message, withDismissAction = true)
+            }
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -197,10 +227,12 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
         ) {
             SetupPanel(
                 mode = ui.mode,
+                listen = settings.listen,
                 mics = mics,
                 micKey = settings.micKey,
                 listening = ui.listening,
                 onMode = vm::setMode,
+                onListen = vm::setListen,
                 onMic = vm::setMic,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
@@ -231,6 +263,10 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
                 hearingSpeech = ui.hearingSpeech,
                 level = vm.level,
                 enabled = true,
+                canRecord = vm.canRecord,
+                recordOn = settings.recordAudio,
+                recordingStartedAt = ui.recordingStartedAt,
+                onToggleRecord = { vm.setRecordAudio(!settings.recordAudio) },
                 onStart = ::startWithPermissions,
                 onStop = vm::stopListening,
                 onPress = {
@@ -265,7 +301,7 @@ private fun Transcript(
         if (atEnd) follow = true else if (dragged) follow = false
     }
     val last = entries.lastOrNull()
-    val lastSize = (last?.english?.length ?: 0) + (last?.korean?.length ?: 0)
+    val lastSize = (last?.translation?.length ?: 0) + (last?.original?.length ?: 0)
     LaunchedEffect(entries.size, lastSize, follow) {
         // The footer item is the last index; scrolling to it lands at the very end.
         if (follow && entries.isNotEmpty()) listState.animateScrollToItem(entries.size)
@@ -324,8 +360,8 @@ private fun EmptyState(mode: Mode) {
         Crossfade(targetState = mode, label = "emptyHint") { m ->
             Text(
                 when (m) {
-                    Mode.CONTINUOUS -> "Tap Start listening and let people talk. Each sentence is translated after a short pause."
-                    Mode.PUSH_TO_TALK -> "Hold the mic button while someone speaks, then release to translate."
+                    Mode.CONTINUOUS -> "Choose who's speaking (한국어 or English), tap the big button and talk. Each sentence is translated after a short pause."
+                    Mode.PUSH_TO_TALK -> "Choose who's speaking (한국어 or English), then hold the mic button while they talk. It translates as they speak and saves a recording when you let go."
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
@@ -347,8 +383,13 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
         animationSpec = tween(400),
         label = "cardColor",
     )
+    // Chat layout: Korean speaker on the left, English speaker on the right.
+    val korean = entry.lang == Lang.KOREAN
+    val accent = if (korean) Brand.Cyan else Brand.Violet
     Card(
-        modifier.fillMaxWidth(),
+        modifier
+            .fillMaxWidth()
+            .padding(start = if (korean) 0.dp else 48.dp, end = if (korean) 48.dp else 0.dp),
         // Slightly see-through, so the full-screen voice glow shows behind the text.
         colors = CardDefaults.cardColors(containerColor = container.copy(alpha = 0.82f)),
     ) {
@@ -358,6 +399,16 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
                     .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow))
                     .padding(16.dp)
             ) {
+                // "한국어 → English" / "English → 한국어"
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+                    Box(Modifier.size(8.dp).background(accent, CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (korean) "한국어 → English" else "English → 한국어",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent,
+                    )
+                }
                 Crossfade(
                     targetState = entry.status == EntryStatus.LISTENING,
                     animationSpec = tween(220),
@@ -365,10 +416,10 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
                 ) { pending ->
                     if (pending) {
                         Column {
-                            if (entry.korean.isNotBlank()) {
-                                // Live Korean as it's spoken.
+                            if (entry.original.isNotBlank()) {
+                                // Live text as it's spoken.
                                 Text(
-                                    entry.korean,
+                                    entry.original,
                                     fontSize = (18 * textScale).sp,
                                     lineHeight = (25 * textScale).sp,
                                     color = scheme.onSurface,
@@ -390,19 +441,19 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
                     } else {
                         Column {
                             when {
-                                entry.english.isNotBlank() -> EnglishText(
-                                    text = entry.english,
+                                entry.translation.isNotBlank() -> TranslationText(
+                                    text = entry.translation,
                                     streaming = entry.status == EntryStatus.TRANSLATING,
                                     textScale = textScale,
                                 )
                                 entry.status == EntryStatus.TRANSLATING -> TypingDots(scheme.primary)
                             }
                             AnimatedVisibility(
-                                visible = entry.korean.isNotBlank(),
+                                visible = entry.original.isNotBlank(),
                                 enter = fadeIn(tween(300)) + expandVertically(),
                             ) {
                                 Text(
-                                    entry.korean,
+                                    entry.original,
                                     fontSize = (15 * textScale).sp,
                                     lineHeight = (21 * textScale).sp,
                                     color = scheme.onSurfaceVariant,
@@ -436,9 +487,9 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
     }
 }
 
-/** English line with a soft blinking caret while tokens are still streaming in. */
+/** The translation, with a soft blinking caret while it's still coming in. */
 @Composable
-private fun EnglishText(text: String, streaming: Boolean, textScale: Float) {
+private fun TranslationText(text: String, streaming: Boolean, textScale: Float) {
     // Toggle twice a second: cheaper than an every-frame alpha animation.
     var caretOn by remember { mutableStateOf(true) }
     LaunchedEffect(streaming) {
@@ -495,6 +546,10 @@ private fun Controls(
     hearingSpeech: Boolean,
     level: StateFlow<Float>,
     enabled: Boolean,
+    canRecord: Boolean,
+    recordOn: Boolean,
+    recordingStartedAt: Long?,
+    onToggleRecord: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onPress: () -> Boolean,
@@ -520,7 +575,8 @@ private fun Controls(
                             Mode.CONTINUOUS -> "Not listening"
                             Mode.PUSH_TO_TALK -> "Hold the button while someone speaks"
                         }
-                        mode == Mode.PUSH_TO_TALK -> "Recording… release to translate"
+                        mode == Mode.PUSH_TO_TALK && recordingStartedAt != null -> "Recording… release to translate"
+                        mode == Mode.PUSH_TO_TALK -> "Listening… release to translate"
                         hearingSpeech -> "Hearing speech"
                         else -> "Listening"
                     },
@@ -533,25 +589,114 @@ private fun Controls(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                AnimatedVisibility(
+                    visible = recordingStartedAt != null,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut(),
+                ) {
+                    Row {
+                        Spacer(Modifier.width(10.dp))
+                        RecBadge(recordingStartedAt ?: 0L)
+                    }
+                }
             }
             Spacer(Modifier.height(12.dp))
 
-            AnimatedContent(
-                targetState = mode,
-                transitionSpec = {
-                    (fadeIn(tween(220, delayMillis = 60)) + scaleIn(tween(220, delayMillis = 60), initialScale = 0.92f))
-                        .togetherWith(fadeOut(tween(100)))
-                },
-                contentAlignment = Alignment.Center,
-                label = "controls",
-            ) { m ->
-                if (m == Mode.PUSH_TO_TALK) {
-                    PushToTalkButton(listening, enabled, onPress, onRelease)
-                } else {
-                    ContinuousButton(listening, enabled, onStart, onStop)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (canRecord) {
+                    RecToggle(on = recordOn, enabled = !listening, onClick = onToggleRecord)
+                    Spacer(Modifier.width(12.dp))
                 }
+                AnimatedContent(
+                    targetState = mode,
+                    transitionSpec = {
+                        (fadeIn(tween(220, delayMillis = 60)) + scaleIn(tween(220, delayMillis = 60), initialScale = 0.92f))
+                            .togetherWith(fadeOut(tween(100)))
+                    },
+                    contentAlignment = Alignment.Center,
+                    label = "controls",
+                    modifier = Modifier.weight(1f),
+                ) { m ->
+                    if (m == Mode.PUSH_TO_TALK) {
+                        PushToTalkButton(listening, enabled, onPress, onRelease)
+                    } else {
+                        ContinuousButton(listening, enabled, onStart, onStop, record = canRecord && recordOn)
+                    }
+                }
+                // Balances the REC button, so the push-to-talk circle stays centred.
+                if (canRecord) Spacer(Modifier.width(68.dp))
             }
         }
+    }
+}
+
+/** Round REC switch: when on, listening also records the voice to an audio file. */
+@Composable
+private fun RecToggle(on: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val haptics = LocalHapticFeedback.current
+    val bg by animateColorAsState(if (on) scheme.error.copy(alpha = 0.18f) else scheme.surfaceContainerHighest, label = "recBg")
+    val fg by animateColorAsState(if (on) scheme.error else scheme.onSurfaceVariant, label = "recFg")
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            onClick = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+            enabled = enabled,
+            shape = CircleShape,
+            color = bg,
+            border = androidx.compose.foundation.BorderStroke(2.dp, fg.copy(alpha = if (enabled) 1f else 0.4f)),
+            modifier = Modifier.size(56.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.FiberManualRecord, if (on) "Recording on" else "Recording off", tint = fg, modifier = Modifier.size(26.dp))
+            }
+        }
+        Text(
+            if (on) "REC on" else "REC off",
+            style = MaterialTheme.typography.labelSmall,
+            color = fg,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+}
+
+/** Red "REC 00:12" pill with a blinking dot while the voice is recorded. */
+@Composable
+private fun RecBadge(startedAt: Long) {
+    var elapsed by remember { mutableLongStateOf(System.currentTimeMillis() - startedAt) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            elapsed = System.currentTimeMillis() - startedAt
+            delay(1000 - elapsed % 1000) // tick exactly on the second
+        }
+    }
+    val blink = rememberInfiniteTransition(label = "rec")
+    val dotAlpha by blink.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(tween(800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "recDot",
+    )
+    val scheme = MaterialTheme.colorScheme
+    val secs = elapsed / 1000
+    Row(
+        Modifier
+            .background(scheme.errorContainer, RoundedCornerShape(50))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(7.dp)
+                .graphicsLayer { alpha = dotAlpha }
+                .background(scheme.error, CircleShape)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            "REC %d:%02d".format(secs / 60, secs % 60),
+            style = MaterialTheme.typography.labelMedium,
+            color = scheme.onErrorContainer,
+            fontFamily = FontFamily.Monospace,
+        )
     }
 }
 
@@ -583,6 +728,8 @@ private fun ContinuousButton(
     enabled: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    /** Recording is on: label the button for recording. */
+    record: Boolean = false,
 ) {
     val haptics = LocalHapticFeedback.current
     val scheme = MaterialTheme.colorScheme
@@ -611,10 +758,22 @@ private fun ContinuousButton(
             label = "btnLabel",
         ) { on ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (on) Icons.Filled.Stop else Icons.Filled.Mic, null)
+                Icon(
+                    when {
+                        on -> Icons.Filled.Stop
+                        record -> Icons.Filled.FiberManualRecord
+                        else -> Icons.Filled.Mic
+                    },
+                    null,
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (on) "Stop" else "Start listening",
+                    when {
+                        on && record -> "Stop & save"
+                        on -> "Stop"
+                        record -> "Record & Listen"
+                        else -> "Start listening"
+                    },
                     fontSize = 18.sp,
                 )
             }

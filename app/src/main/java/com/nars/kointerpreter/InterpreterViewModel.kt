@@ -2,17 +2,32 @@ package com.nars.kointerpreter
 
 import android.app.Application
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nars.kointerpreter.api.FreeTranslator
 import com.nars.kointerpreter.audio.MicDevice
 import com.nars.kointerpreter.audio.MicManager
+import com.nars.kointerpreter.audio.RecordingStore
+import com.nars.kointerpreter.audio.VoiceRecorder
+import com.nars.kointerpreter.data.Lang
 import com.nars.kointerpreter.data.Settings
 import com.nars.kointerpreter.data.SettingsRepository
-import com.nars.kointerpreter.speech.KoreanRecognizer
+import com.nars.kointerpreter.speech.SpeechListener
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,7 +39,7 @@ import kotlinx.coroutines.launch
 enum class Mode { CONTINUOUS, PUSH_TO_TALK }
 
 enum class EntryStatus {
-    /** Korean is still being spoken; text is live and may change. */
+    /** Still being spoken; text is live and may change. */
     LISTENING,
     TRANSLATING,
     DONE,
@@ -33,8 +48,12 @@ enum class EntryStatus {
 
 data class Entry(
     val id: Long,
-    val korean: String = "",
-    val english: String = "",
+    /** What was said, in the speaker's language. */
+    val original: String = "",
+    /** The translation into the other language. */
+    val translation: String = "",
+    /** Language [original] is in. */
+    val lang: Lang = Lang.KOREAN,
     val status: EntryStatus = EntryStatus.LISTENING,
     val error: String? = null,
 )
@@ -44,9 +63,17 @@ data class UiState(
     val listening: Boolean = false,
     val hearingSpeech: Boolean = false,
     val micError: String? = null,
+    /** Set while the voice is being recorded (start time, for the REC timer). */
+    val recordingStartedAt: Long? = null,
 )
 
-class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanRecognizer.Listener {
+/** A push-to-talk recording was saved (or couldn't be). */
+sealed interface RecordingEvent {
+    data class Saved(val uri: Uri, val durationMs: Long, val folder: String) : RecordingEvent
+    data class Failed(val message: String) : RecordingEvent
+}
+
+class InterpreterViewModel(app: Application) : AndroidViewModel(app), SpeechListener.Listener {
 
     val settingsRepo = SettingsRepository(app)
     val settings: StateFlow<Settings> = settingsRepo.settings
@@ -68,11 +95,11 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
     private var capture = Capture.OFF
 
     /** Finished sentences are translated one at a time, in spoken order. */
-    private class Pending(val id: Long, val korean: String)
+    private class Pending(val id: Long, val text: String, val lang: Lang)
     private val queue = Channel<Pending>(Channel.UNLIMITED)
 
     init {
-        viewModelScope.launch { for (p in queue) translate(p.id, p.korean) }
+        viewModelScope.launch { for (p in queue) translate(p.id, p.text, p.lang) }
         // Fetch the Korean translation model (about 30 MB, once) so the first sentence isn't delayed.
         viewModelScope.launch { FreeTranslator.refreshState(); FreeTranslator.ensureModel() }
     }
@@ -83,6 +110,22 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         if (mode == _ui.value.mode) return
         stopAll()
         _ui.update { it.copy(mode = mode) }
+    }
+
+    /** Record the voice while listening (the REC button). */
+    fun setRecordAudio(on: Boolean) {
+        if (capture != Capture.OFF) return // takes effect from the next start
+        settingsRepo.update { it.copy(recordAudio = on) }
+    }
+
+    /** Recording needs the recognizer to accept the app's own audio (Android 13+). */
+    val canRecord: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+    /** Who's speaking now: Korean (translated to English) or English (translated to Korean). */
+    fun setListen(listen: Lang) {
+        if (listen == settings.value.listen) return
+        stopAll()
+        settingsRepo.update { it.copy(listen = listen) }
     }
 
     fun stopAll() {
@@ -132,6 +175,8 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
     }
 
     private var startJob: Job? = null
+    /** Mic push-to-talk records from: the chosen external mic, or the built-in one. */
+    private var pttDevice: AudioDeviceInfo? = null
 
     /**
      * Routes audio to the chosen mic, then starts the recognizer. Routing a
@@ -143,6 +188,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         capture = Capture.STARTING
         val wantsExternal = settings.value.micKey.isNotBlank()
         val external = if (wantsExternal) micManager.findInput(settings.value.micKey) else null
+        pttDevice = external ?: micManager.builtInMic()
         _ui.update { it.copy(listening = true, micError = null) }
 
         startJob = viewModelScope.launch {
@@ -176,7 +222,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
 
     // ===================================================== built-in recognizer
 
-    private val recognizer = KoreanRecognizer(app, this)
+    private val recognizer = SpeechListener(app, this)
     private var nextSession: Job? = null
     private var finishTimeout: Job? = null
 
@@ -192,6 +238,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         capture = Capture.CONTINUOUS
         muteBeeps(true)
         setListening()
+        startRecording()
         startSession()
     }
 
@@ -199,7 +246,10 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         capture = Capture.OFF
         nextSession?.cancel()
         setIdle()
-        if (liveId != null) {
+        val speaking = liveId != null
+        // Ends the recognizer's audio too (when recording), so it finishes the current sentence.
+        finishRecording()
+        if (speaking) {
             // Let the recognizer deliver the sentence that was being spoken, but don't wait forever.
             recognizer.stop()
             finishTimeout = viewModelScope.launch {
@@ -219,6 +269,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         liveId = null
         muteBeeps(true)
         setListening()
+        startRecording()
         startSession()
     }
 
@@ -227,6 +278,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         nextSession?.cancel()
         setIdle()
         recognizer.stop()
+        finishRecording()
         finishTimeout = viewModelScope.launch {
             delay(2500)
             recognizer.cancel()
@@ -236,8 +288,83 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
 
     private fun startSession() {
         partial = ""
+        voiced = false
         val s = settings.value
-        recognizer.start(s.onDeviceRecognition, s.silenceMs, s.biasingTerms)
+        recognizer.start(s.listen, s.onDeviceRecognition, s.silenceMs, s.biasingTerms, recorder?.newRecognizerInput())
+    }
+
+    // ================================================ push-to-talk recording
+
+    /** Records the voice while the push-to-talk button is held; the recognizer listens to the same audio. */
+    private var recorder: VoiceRecorder? = null
+    private var recordingStartedAt = 0L
+
+    private val _recordings = MutableSharedFlow<RecordingEvent>(extraBufferCapacity = 4)
+    /** "Recording saved" notices for the UI. */
+    val recordings: SharedFlow<RecordingEvent> = _recordings.asSharedFlow()
+
+    /** Saving outlives the ViewModel, so a recording is still saved if the app closes. */
+    private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun startRecording() {
+        // The recognizer can only listen to the app's own audio on Android 13+.
+        if (!canRecord || !settings.value.recordAudio) return
+        val ctx = getApplication<Application>()
+        val rec = VoiceRecorder(RecordingStore.newTempFile(ctx), pttDevice)
+        rec.onLevel = { level -> mainHandler.post { onRecorderLevel(level) } }
+        try {
+            rec.start()
+        } catch (e: Exception) {
+            _ui.update { it.copy(micError = "Couldn't start the recording (${e.message}). Translating without recording.") }
+            return
+        }
+        recorder = rec
+        recordingStartedAt = System.currentTimeMillis()
+        _ui.update { it.copy(recordingStartedAt = recordingStartedAt) }
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    /** Continuous + recording: whether someone is talking, judged from the recorded audio. */
+    private var voiced = false
+    private var lastVoiceAt = 0L
+
+    /**
+     * While recording, the recognizer hears the app's audio stream, which it doesn't split
+     * into sentences by itself. So in Continuous mode the app ends each sentence when the
+     * speaker pauses; the recognizer then delivers it and a new sentence starts.
+     */
+    private fun onRecorderLevel(level: Float) {
+        if (recorder == null) return
+        _level.value = level
+        if (capture != Capture.CONTINUOUS) return
+        val now = SystemClock.elapsedRealtime()
+        if (level > VOICE_LEVEL) {
+            lastVoiceAt = now
+            if (!voiced) { voiced = true; _ui.update { it.copy(hearingSpeech = true) } }
+        } else if (voiced && now - lastVoiceAt > settings.value.silenceMs + 300) {
+            voiced = false
+            _ui.update { it.copy(hearingSpeech = false) }
+            recorder?.endRecognizerInput()
+        }
+    }
+
+    /** Ends the audio the recognizer hears, then finishes and saves the recording. */
+    private fun finishRecording() {
+        val rec = recorder ?: return
+        recorder = null
+        _ui.update { it.copy(recordingStartedAt = null) }
+        rec.endRecognizerInput()
+        val startedAt = recordingStartedAt
+        val ctx = getApplication<Application>()
+        saveScope.launch {
+            val file = rec.stop() ?: return@launch
+            if (rec.durationMs < 300) { file.delete(); return@launch } // an accidental tap
+            val uri = RecordingStore.save(ctx, file, startedAt)
+            _recordings.tryEmit(
+                if (uri != null) RecordingEvent.Saved(uri, rec.durationMs, RecordingStore.folderHint())
+                else RecordingEvent.Failed("Couldn't save the recording. Check that the tablet has free storage.")
+            )
+        }
     }
 
     private fun restartSoon(delayMs: Long = 150) {
@@ -265,7 +392,8 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
     }
 
     override fun onLevel(level: Float) {
-        if (capture == Capture.CONTINUOUS || capture == Capture.PTT_HOLDING) _level.value = level
+        // While recording, the recorder reports the level from the same audio.
+        if (recorder == null && (capture == Capture.CONTINUOUS || capture == Capture.PTT_HOLDING)) _level.value = level
     }
 
     override fun onPartial(text: String) {
@@ -287,19 +415,19 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
     }
 
     override fun onError(error: Int) {
-        val silence = KoreanRecognizer.isSilence(error)
-        val transient = KoreanRecognizer.isTransient(error)
+        val silence = SpeechListener.isSilence(error)
+        val transient = SpeechListener.isTransient(error)
         when (capture) {
             Capture.CONTINUOUS -> {
                 if (partial.isNotBlank()) finalizeLive(partial)
                 when {
                     silence -> restartSoon()
                     transient -> {
-                        _ui.update { it.copy(micError = KoreanRecognizer.message(error)) }
+                        _ui.update { it.copy(micError = SpeechListener.message(error)) }
                         recognizer.destroy() // a fresh instance recovers from "busy"/client errors
                         restartSoon(1000)
                     }
-                    else -> fail(KoreanRecognizer.message(error))
+                    else -> fail(SpeechListener.message(error))
                 }
             }
             Capture.PTT_HOLDING -> {
@@ -307,7 +435,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
                 when {
                     silence -> restartSoon()
                     transient -> { recognizer.destroy(); restartSoon(800) }
-                    else -> fail(KoreanRecognizer.message(error))
+                    else -> fail(SpeechListener.message(error))
                 }
             }
             Capture.PTT_FINISHING -> finishPtt(partial)
@@ -320,23 +448,24 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         if (text.isBlank()) return
         if (_ui.value.micError != null) _ui.update { it.copy(micError = null) }
         val id = liveId ?: newEntry(EntryStatus.LISTENING).also { liveId = it }
-        updateEntry(id) { it.copy(korean = text) }
+        updateEntry(id) { it.copy(original = text, lang = settings.value.listen) }
     }
 
-    /** The sentence is complete: lock in the Korean and queue it for translation. */
+    /** The sentence is complete: lock in the text and queue it for translation. */
     private fun finalizeLive(text: String) {
         finishTimeout?.cancel()
         val id = liveId
         liveId = null
         partial = ""
-        val korean = text.trim()
-        if (korean.isBlank()) {
+        val said = text.trim()
+        val lang = settings.value.listen
+        if (said.isBlank()) {
             if (id != null) removeEntry(id)
             return
         }
         val entryId = id ?: newEntry(EntryStatus.LISTENING)
-        updateEntry(entryId) { it.copy(korean = korean, status = EntryStatus.TRANSLATING) }
-        queue.trySend(Pending(entryId, korean))
+        updateEntry(entryId) { it.copy(original = said, lang = lang, status = EntryStatus.TRANSLATING) }
+        queue.trySend(Pending(entryId, said, lang))
     }
 
     private fun appendPtt(text: String) {
@@ -377,6 +506,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
     }
 
     private fun fail(message: String) {
+        finishRecording()
         capture = Capture.OFF
         nextSession?.cancel()
         setIdle()
@@ -385,10 +515,10 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
 
     // ============================================================ translation
 
-    private suspend fun translate(id: Long, korean: String) {
+    private suspend fun translate(id: Long, text: String, from: Lang) {
         try {
-            val english = FreeTranslator.translate(korean, settings.value.glossary)
-            updateEntry(id) { it.copy(english = english, status = EntryStatus.DONE, error = null) }
+            val translated = FreeTranslator.translate(text, from, settings.value.glossary)
+            updateEntry(id) { it.copy(translation = translated, status = EntryStatus.DONE, error = null) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -398,9 +528,9 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
 
     fun retry(id: Long) {
         val entry = _entries.value.firstOrNull { it.id == id } ?: return
-        if (entry.korean.isBlank()) return
-        updateEntry(id) { it.copy(status = EntryStatus.TRANSLATING, error = null, english = "") }
-        viewModelScope.launch { translate(id, entry.korean) }
+        if (entry.original.isBlank()) return
+        updateEntry(id) { it.copy(status = EntryStatus.TRANSLATING, error = null, translation = "") }
+        viewModelScope.launch { translate(id, entry.original, entry.lang) }
     }
 
     // ============================================================= transcript
@@ -428,7 +558,7 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
 
     fun transcriptText(): String = _entries.value
         .filter { it.status == EntryStatus.DONE }
-        .joinToString("\n\n") { "${it.korean}\n${it.english}" }
+        .joinToString("\n\n") { "${it.original}\n${it.translation}" }
 
     private fun updateEntry(id: Long, f: (Entry) -> Entry) =
         _entries.update { list -> list.map { if (it.id == id) f(it) else it } }
@@ -437,7 +567,13 @@ class InterpreterViewModel(app: Application) : AndroidViewModel(app), KoreanReco
         _entries.update { list -> list.filterNot { it.id == id } }
     }
 
+    private companion object {
+        /** Recorder loudness (0..1) above which someone is talking. */
+        const val VOICE_LEVEL = 0.35f
+    }
+
     override fun onCleared() {
+        finishRecording()
         recognizer.destroy()
         micManager.release()
         muteBeeps(false)

@@ -1,14 +1,15 @@
 # Araso (Android)
 
-Listens to Korean speech and shows an English translation on screen. Completely free: no account, no API key, no cost.
+A two-way conversation interpreter: Korean speech is translated to English, and Indian English speech to Korean, shown as a chat (Korean speaker on the left, English speaker on the right). Completely free: no account, no API key, no cost.
 
-- **Recognition:** Android's built-in recognizer (the Google app), with live Korean text while people speak.
-- **Translation:** Google ML Kit, on the phone. The Korean model (about 30 MB) downloads once on first launch; after that translation works offline. Your glossary's `Korean = English` lines are applied before translating so names and terms come out right.
+- **Recognition:** Android's built-in recognizer (the Google app), with live text while people speak.
+- **Who's speaking:** tap **한국어** or **English** in the setup panel for whoever is about to talk. Korean (`ko-KR`) is translated to English, Indian English (`en-IN`) to Korean.
+- **Translation:** Google ML Kit, on the device, both directions. The Korean model (about 30 MB) downloads once on first launch; after that translation works offline. Your glossary's `Korean = English` lines are applied before translating (in both directions) so names and terms come out right.
 
 ## Two listening modes
 
 - **Continuous:** tap *Start listening*. Each sentence is translated after the speaker pauses, like a live interpreter.
-- **Push to talk:** hold the mic button while someone speaks, release to translate.
+- **Push to talk:** hold the mic button while someone speaks. It translates as they talk and also records their voice; when you let go, the recording is saved as a `.wav` in **Recordings/Araso** (Music/Araso on Android 10–11) and a message offers **Share**. Recording needs Android 13+: the app records the mic itself and streams the same audio to the speech recognizer (`EXTRA_AUDIO_SOURCE`), since the recognizer can't share the microphone with a recorder.
 
 ## Choosing the microphone
 
@@ -53,12 +54,14 @@ Min Android 8.0 (API 26). Target/compile SDK 36.
 app/src/main/java/com/nars/kointerpreter/
   MainActivity.kt              screen switching with slide transition
   InterpreterViewModel.kt      both modes, ordered translation pipeline
-  speech/KoreanRecognizer.kt   Android built-in recognizer
+  speech/SpeechListener.kt     Android built-in recognizer (Korean or Indian English)
   audio/MicManager.kt          detects external mics and routes audio to the chosen one
-  api/FreeTranslator.kt        on-device translator (Google ML Kit) + glossary swap
+  audio/VoiceRecorder.kt       push-to-talk: records the mic to WAV and feeds the recognizer the same audio
+  audio/RecordingStore.kt      saves recordings to Recordings/Araso
+  api/FreeTranslator.kt        on-device Korean ⇄ English translator (Google ML Kit) + glossary swap
   data/Settings.kt             preferences
   ui/MainScreen.kt             transcript, mode switch, controls
   ui/VoiceWave.kt              Siri-style listening wave (colors at the top of the file)
-  ui/SetupPanel.kt             front-page panel: mode and microphone
+  ui/SetupPanel.kt             front-page panel: mode, language and microphone
   ui/SettingsScreen.kt         translator model, recognizer options, glossary, text size
 ```
