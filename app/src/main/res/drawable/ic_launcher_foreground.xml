@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Araso: an ear listening to sound waves (cyan→violet). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M33.6,52.8 L33.6,56.16"
+        android:strokeWidth="4.08"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="31.56"
+                android:startY="54"
+                android:endX="50.16"
+                android:endY="54"
+                android:startColor="#22D3EE"
+                android:endColor="#8B5CF6" />
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M37.8,48.24 Q45.72,54.36 37.8,60.48"
+        android:strokeWidth="3.84"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="31.56"
+                android:startY="54"
+                android:endX="50.16"
+                android:endY="54"
+                android:startColor="#22D3EE"
+                android:endColor="#8B5CF6" />
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M43.32,45.12 Q53.28,54.48 43.56,63.84"
+        android:strokeWidth="4.08"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="31.56"
+                android:startY="54"
+                android:endX="50.16"
+                android:endY="54"
+                android:startColor="#22D3EE"
+                android:endColor="#8B5CF6" />
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M50.76,41.04 C54.6,35.76 58.68,33.6 63,33.6 C70.56,33.6 76.56,39.84 76.56,48.96 C76.56,57.36 71.76,62.16 67.56,67.8 C64.92,71.52 63,74.4 57.96,74.4 C55.56,74.4 53.76,73.2 52.2,70.2"
+        android:strokeColor="#F4F6FF"
+        android:strokeWidth="4.08"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M55.8,47.4 C57.36,45.24 58.92,44.4 60.96,44.4 C64.92,44.4 67.56,47.4 67.56,51.12 C67.56,56.16 63,57.6 60.12,60.36 C58.68,61.8 57.84,63.12 57.48,64.2"
+        android:strokeColor="#F4F6FF"
+        android:strokeWidth="4.08"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
