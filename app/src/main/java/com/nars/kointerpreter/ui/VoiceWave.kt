@@ -39,10 +39,11 @@ private class WaveLayer(
 )
 
 private val Layers = listOf(
-    WaveLayer(Color(0xFF7C4DFF), freq = 3.0f, speed = 1.9f, amp = 1.00f, offset = 0.0f), // violet
-    WaveLayer(Color(0xFF00BFA5), freq = 4.2f, speed = -2.4f, amp = 0.85f, offset = 1.3f), // teal
-    WaveLayer(Color(0xFFFF6E6E), freq = 2.4f, speed = 2.9f, amp = 0.72f, offset = 2.6f), // coral
-    WaveLayer(Color(0xFF40C4FF), freq = 5.1f, speed = -1.6f, amp = 0.58f, offset = 4.0f), // sky
+    // Araso icon colors: cyan → blue → violet.
+    WaveLayer(Color(0xFF8B5CF6), freq = 3.0f, speed = 1.9f, amp = 1.00f, offset = 0.0f), // violet
+    WaveLayer(Color(0xFF22D3EE), freq = 4.2f, speed = -2.4f, amp = 0.85f, offset = 1.3f), // cyan
+    WaveLayer(Color(0xFF3B82F6), freq = 2.4f, speed = 2.9f, amp = 0.72f, offset = 2.6f), // blue
+    WaveLayer(Color(0xFFA5B4FC), freq = 5.1f, speed = -1.6f, amp = 0.58f, offset = 4.0f), // soft indigo
 )
 
 /** Tapers each wave to zero at both ends so it swells from the middle. */
@@ -60,7 +61,15 @@ private fun attenuation(t: Float): Float {
  * stops completely once the wave has faded out.
  */
 @Composable
-fun VoiceWave(level: StateFlow<Float>, active: Boolean, modifier: Modifier = Modifier) {
+fun VoiceWave(
+    level: StateFlow<Float>,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    /** 0..1: how strong the colors are (lower for a soft full-screen background). */
+    opacity: Float = 1f,
+    /** The thin resting line the waves grow out of. */
+    showLine: Boolean = true,
+) {
     // Loudness 0..1 (already normalized by the engine): rises quickly with speech, falls back more slowly (less jitter).
     val loud = remember { Animatable(0f) }
     LaunchedEffect(level) {
@@ -97,11 +106,13 @@ fun VoiceWave(level: StateFlow<Float>, active: Boolean, modifier: Modifier = Mod
         val p = presence
 
         // Resting line, which the waves grow out of.
-        drawLine(
-            lineColor.copy(alpha = 0.12f + 0.22f * (1f - p)),
-            Offset(0f, mid), Offset(w, mid),
-            strokeWidth = 1.dp.toPx(),
-        )
+        if (showLine) {
+            drawLine(
+                lineColor.copy(alpha = 0.12f + 0.22f * (1f - p)),
+                Offset(0f, mid), Offset(w, mid),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
         if (p < 0.01f || w <= 0f) return@Canvas
 
         val energy = (0.10f + 0.90f * loud.value) * p
@@ -132,7 +143,7 @@ fun VoiceWave(level: StateFlow<Float>, active: Boolean, modifier: Modifier = Mod
 
             drawPath(
                 path,
-                layer.color.copy(alpha = if (dark) 0.6f else 0.42f),
+                layer.color.copy(alpha = (if (dark) 0.6f else 0.42f) * opacity),
                 // Additive blending on dark backgrounds gives the glowing overlap.
                 blendMode = if (dark) BlendMode.Plus else BlendMode.SrcOver,
             )

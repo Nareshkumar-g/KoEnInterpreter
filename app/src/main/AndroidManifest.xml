@@ -2,11 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Downloads the free translator's Korean model once; online speech recognition. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Meeting mode: keep recording with the screen off, and show the ongoing notification. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Android 11+: lets the app see the phone's speech recognition service. -->
     <queries>
@@ -35,21 +32,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <service
-            android:name=".meeting.MeetingService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-
-        <!-- Shares saved meetings on Android 8–9 (newer versions use the shared Recordings/Download folders). -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.files"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
     </application>
 </manifest>

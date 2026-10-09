@@ -2,16 +2,6 @@ package com.nars.kointerpreter.ui
 
 import android.Manifest
 import android.content.Intent
-import android.content.ClipData
-import android.os.Build
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.filled.Groups
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.text.font.FontFamily
-import com.nars.kointerpreter.MeetingEvent
-import com.nars.kointerpreter.meeting.MeetingStore
-import com.nars.kointerpreter.meeting.SavedMeeting
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -68,7 +58,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -82,6 +71,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
@@ -98,7 +88,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.Image
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.res.painterResource
+import com.nars.kointerpreter.R
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -119,9 +113,6 @@ import com.nars.kointerpreter.Entry
 import com.nars.kointerpreter.EntryStatus
 import com.nars.kointerpreter.InterpreterViewModel
 import com.nars.kointerpreter.Mode
-import com.nars.kointerpreter.api.KeyKind
-import com.nars.kointerpreter.data.Engine
-import com.nars.kointerpreter.data.TranslationProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -138,26 +129,6 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     val mode by rememberUpdatedState(ui.mode)
 
-    // ---- API key setup (bottom sheet) ----
-    var keyRequest by remember { mutableStateOf<KeyRequest?>(null) }
-    fun keysNeeded(engine: Engine): List<KeyKind> = settings.keysNeeded(engine)
-    fun askForKeys(engine: Engine, switchToOpenAi: Boolean = false, switchToMeeting: Boolean = false) {
-        val askTranslator = !settings.translatorChosen
-        if (askTranslator || keysNeeded(engine).isNotEmpty()) {
-            keyRequest = KeyRequest(engine, askTranslator, switchToOpenAi, switchToMeeting)
-        }
-    }
-    // Meetings always use the OpenAI recognizer (they record the audio themselves).
-    val effectiveEngine = if (ui.mode == Mode.MEETING) Engine.OPENAI else settings.engine
-    val missingKeys = keysNeeded(effectiveEngine)
-    // First launch (and any launch while a key is still missing): ask once.
-    LaunchedEffect(Unit) {
-        if (!vm.askedForKeysThisLaunch) {
-            vm.askedForKeysThisLaunch = true
-            askForKeys(vm.settings.value.engine)
-        }
-    }
-
     // Keep the screen awake while the mic is open so Android doesn't cut it off.
     val view = LocalView.current
     DisposableEffect(ui.listening) {
@@ -168,64 +139,32 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
     fun hasMic() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
 
-    // Meeting mode shows an ongoing "Recording meeting" notification (Android 13+ asks first).
-    var askedNotifications by rememberSaveable { mutableStateOf(false) }
-    fun shouldAskNotifications() = mode == Mode.MEETING && !askedNotifications &&
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-
-    val notificationLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { vm.startContinuous() } // start either way; the notification is only a nicety
-
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted && mode != Mode.PUSH_TO_TALK) {
-            if (shouldAskNotifications()) {
-                askedNotifications = true
-                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            } else {
-                vm.startContinuous()
-            }
-        }
+        if (granted && mode != Mode.PUSH_TO_TALK) vm.startContinuous()
     }
 
     fun startWithPermissions() {
-        when {
-            !hasMic() -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            shouldAskNotifications() -> {
-                askedNotifications = true
-                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            else -> vm.startContinuous()
-        }
+        if (hasMic()) vm.startContinuous() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    // "Meeting saved" message with a Share button.
-    LaunchedEffect(Unit) {
-        vm.events.collect { event ->
-            when (event) {
-                is MeetingEvent.Saved -> {
-                    val minutes = (event.meeting.durationMs / 60_000).coerceAtLeast(1)
-                    val result = snackbar.showSnackbar(
-                        "Meeting saved ($minutes min) to ${event.meeting.folderHint}",
-                        actionLabel = "Share",
-                        withDismissAction = true,
-                        duration = SnackbarDuration.Long,
-                    )
-                    if (result == SnackbarResult.ActionPerformed) shareMeeting(context, event.meeting)
-                }
-                is MeetingEvent.Failed -> snackbar.showSnackbar(event.message, withDismissAction = true)
-            }
-        }
-    }
-
+    Box(Modifier.fillMaxSize()) {
+    // Full-screen glow: the voice wave fills the screen behind the text while someone is speaking.
+    VoiceWave(
+        vm.level,
+        active = ui.listening && ui.hearingSpeech,
+        modifier = Modifier.fillMaxSize(),
+        opacity = 0.45f,
+        showLine = false,
+    )
     Scaffold(
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Korean → English", fontWeight = FontWeight.SemiBold) },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent),
+                title = { Text("Araso", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     val hasEntries = entries.isNotEmpty()
                     IconButton(enabled = hasEntries, onClick = {
@@ -236,8 +175,7 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
                             context.startActivity(Intent.createChooser(send, "Share transcript"))
                         }
                     }) { Icon(Icons.Filled.Share, "Share transcript") }
-                    val meetingBusy = ui.meetingStartedAt != null || ui.savingMeeting
-                    IconButton(enabled = hasEntries && !meetingBusy, onClick = {
+                    IconButton(enabled = hasEntries, onClick = {
                         val removed = vm.clear()
                         scope.launch {
                             snackbar.currentSnackbarData?.dismiss()
@@ -245,7 +183,6 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
                                 "Transcript cleared", actionLabel = "Undo", duration = SnackbarDuration.Short,
                             )
                             if (r == SnackbarResult.ActionPerformed) vm.restore(removed)
-                            else vm.forgetAudio(removed)
                         }
                     }) { Icon(Icons.Filled.DeleteSweep, "Clear transcript") }
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, "Settings") }
@@ -258,49 +195,12 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            AnimatedVisibility(
-                visible = missingKeys.isNotEmpty(),
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                Card(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                ) {
-                    Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            when {
-                                KeyKind.ANTHROPIC in missingKeys -> "Add your Anthropic API key for Claude translation"
-                                settings.translator == TranslationProvider.OPENAI -> "Add your OpenAI API key to start"
-                                ui.mode == Mode.MEETING -> "Meeting mode needs an OpenAI API key"
-                                else -> "Noisy place mode needs an OpenAI API key"
-                            },
-                            Modifier.weight(1f),
-                        )
-                        TextButton(onClick = { askForKeys(effectiveEngine) }) { Text("Add key") }
-                    }
-                }
-            }
-
             SetupPanel(
                 mode = ui.mode,
-                engine = settings.engine,
                 mics = mics,
                 micKey = settings.micKey,
                 listening = ui.listening,
-                onMode = { m ->
-                    // Meetings need the OpenAI key: ask first, switch once it's saved.
-                    if (m == Mode.MEETING && keysNeeded(Engine.OPENAI).isNotEmpty()) {
-                        askForKeys(Engine.OPENAI, switchToMeeting = true)
-                    } else {
-                        vm.setMode(m)
-                    }
-                },
-                onEngine = { e ->
-                    // Noisy place needs an OpenAI key: ask for it first, switch once it's saved.
-                    if (e == Engine.OPENAI && settings.openAiKey.isBlank()) askForKeys(Engine.OPENAI, switchToOpenAi = true)
-                    else vm.setEngine(e)
-                },
+                onMode = vm::setMode,
                 onMic = vm::setMic,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
@@ -329,74 +229,19 @@ fun MainScreen(vm: InterpreterViewModel, onOpenSettings: () -> Unit) {
                 mode = ui.mode,
                 listening = ui.listening,
                 hearingSpeech = ui.hearingSpeech,
-                meetingStartedAt = ui.meetingStartedAt,
-                savingMeeting = ui.savingMeeting,
                 level = vm.level,
                 enabled = true,
-                onStart = {
-                    if (missingKeys.isNotEmpty()) askForKeys(effectiveEngine) else startWithPermissions()
-                },
+                onStart = ::startWithPermissions,
                 onStop = vm::stopListening,
                 onPress = {
-                    if (keysNeeded(settings.engine).isNotEmpty()) { askForKeys(settings.engine); false }
-                    else if (hasMic()) { vm.pttPress(); true }
+                    if (hasMic()) { vm.pttPress(); true }
                     else { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO); false }
                 },
                 onRelease = vm::pttRelease,
             )
         }
     }
-
-    keyRequest?.let { req ->
-        KeySetupSheet(
-            askTranslator = req.askTranslator,
-            initialTranslator = settings.translator,
-            keysFor = { provider -> vm.settings.value.keysNeeded(req.engine, provider) },
-            onTranslator = { provider ->
-                vm.settingsRepo.update { it.copy(translator = provider, translatorChosen = true) }
-            },
-            onSave = { kind, key ->
-                vm.settingsRepo.update {
-                    if (kind == KeyKind.OPENAI) it.copy(openAiKey = key) else it.copy(anthropicKey = key)
-                }
-            },
-            onFinished = {
-                if (req.switchToOpenAi) vm.setEngine(Engine.OPENAI)
-                if (req.switchToMeeting) vm.setMode(Mode.MEETING)
-                keyRequest = null
-            },
-            onDismiss = {
-                // Saved the OpenAI key but skipped the rest? Still switch; the banner asks for what's missing.
-                val hasOpenAi = vm.settings.value.openAiKey.isNotBlank()
-                if (req.switchToOpenAi && hasOpenAi) vm.setEngine(Engine.OPENAI)
-                if (req.switchToMeeting && hasOpenAi) vm.setMode(Mode.MEETING)
-                keyRequest = null
-            },
-        )
     }
-}
-
-/** What the setup sheet should ask for, and what to switch to once it's done. */
-private data class KeyRequest(
-    /** Recognizer the keys are for (decides whether the OpenAI key is needed). */
-    val engine: Engine,
-    /** First run: let the user pick Claude or OpenAI for translation first. */
-    val askTranslator: Boolean,
-    val switchToOpenAi: Boolean,
-    val switchToMeeting: Boolean,
-)
-
-/** Opens the share sheet with the meeting's audio and transcript. */
-private fun shareMeeting(context: android.content.Context, meeting: SavedMeeting) {
-    val uris = ArrayList(listOfNotNull(meeting.audio, meeting.transcript))
-    if (uris.isEmpty()) return
-    val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-        type = "*/*"
-        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-        clipData = ClipData.newRawUri("Meeting", uris.first()).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(Intent.createChooser(send, "Share meeting")) }
 }
 
 // ------------------------------------------------------------------ transcript
@@ -473,19 +318,14 @@ private fun EmptyState(mode: Mode) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Filled.Translate, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(32.dp))
-        }
+        // The Araso ear-and-waves logo (same drawing as the app icon).
+        Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.size(132.dp))
         Text("Ready to interpret", style = MaterialTheme.typography.titleMedium)
         Crossfade(targetState = mode, label = "emptyHint") { m ->
             Text(
                 when (m) {
                     Mode.CONTINUOUS -> "Tap Start listening and let people talk. Each sentence is translated after a short pause."
                     Mode.PUSH_TO_TALK -> "Hold the mic button while someone speaks, then release to translate."
-                    Mode.MEETING -> "Tap Start meeting. Everything is translated live and recorded; the audio and transcript are saved when you end it."
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium,
@@ -509,7 +349,8 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
     )
     Card(
         modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = container),
+        // Slightly see-through, so the full-screen voice glow shows behind the text.
+        colors = CardDefaults.cardColors(containerColor = container.copy(alpha = 0.82f)),
     ) {
         SelectionContainer {
             Column(
@@ -518,14 +359,14 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
                     .padding(16.dp)
             ) {
                 Crossfade(
-                    targetState = entry.status == EntryStatus.LISTENING || entry.status == EntryStatus.TRANSCRIBING,
+                    targetState = entry.status == EntryStatus.LISTENING,
                     animationSpec = tween(220),
                     label = "phase",
                 ) { pending ->
                     if (pending) {
                         Column {
                             if (entry.korean.isNotBlank()) {
-                                // Live Korean as it's spoken (built-in recognizer).
+                                // Live Korean as it's spoken.
                                 Text(
                                     entry.korean,
                                     fontSize = (18 * textScale).sp,
@@ -539,7 +380,7 @@ private fun EntryCard(entry: Entry, textScale: Float, onRetry: (Long) -> Unit, m
                                     TypingDots(scheme.primary)
                                     Spacer(Modifier.width(10.dp))
                                     Text(
-                                        if (entry.status == EntryStatus.TRANSCRIBING) "Transcribing" else "Listening",
+                                        "Listening",
                                         color = scheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodyMedium,
                                     )
@@ -652,8 +493,6 @@ private fun Controls(
     mode: Mode,
     listening: Boolean,
     hearingSpeech: Boolean,
-    meetingStartedAt: Long?,
-    savingMeeting: Boolean,
     level: StateFlow<Float>,
     enabled: Boolean,
     onStart: () -> Unit,
@@ -677,11 +516,9 @@ private fun Controls(
                 }
                 AnimatedContent(
                     targetState = when {
-                        !listening && savingMeeting -> "Saving meeting…"
                         !listening -> when (mode) {
                             Mode.CONTINUOUS -> "Not listening"
                             Mode.PUSH_TO_TALK -> "Hold the button while someone speaks"
-                            Mode.MEETING -> "Ready to record"
                         }
                         mode == Mode.PUSH_TO_TALK -> "Recording… release to translate"
                         hearingSpeech -> "Hearing speech"
@@ -695,16 +532,6 @@ private fun Controls(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                AnimatedVisibility(
-                    visible = meetingStartedAt != null,
-                    enter = fadeIn() + scaleIn(),
-                    exit = fadeOut() + scaleOut(),
-                ) {
-                    Row {
-                        Spacer(Modifier.width(10.dp))
-                        RecBadge(meetingStartedAt ?: 0L)
-                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -721,50 +548,10 @@ private fun Controls(
                 if (m == Mode.PUSH_TO_TALK) {
                     PushToTalkButton(listening, enabled, onPress, onRelease)
                 } else {
-                    ContinuousButton(listening, enabled, onStart, onStop, meeting = m == Mode.MEETING)
+                    ContinuousButton(listening, enabled, onStart, onStop)
                 }
             }
         }
-    }
-}
-
-/** Red "REC 00:12:34" pill with a blinking dot while a meeting is recorded. */
-@Composable
-private fun RecBadge(startedAt: Long) {
-    var elapsed by remember { mutableLongStateOf(System.currentTimeMillis() - startedAt) }
-    LaunchedEffect(startedAt) {
-        while (true) {
-            elapsed = System.currentTimeMillis() - startedAt
-            delay(1000 - elapsed % 1000) // tick exactly on the second
-        }
-    }
-    val blink = rememberInfiniteTransition(label = "rec")
-    val dotAlpha by blink.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.25f,
-        animationSpec = infiniteRepeatable(tween(800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "recDot",
-    )
-    val scheme = MaterialTheme.colorScheme
-    Row(
-        Modifier
-            .background(scheme.errorContainer, RoundedCornerShape(50))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(7.dp)
-                .graphicsLayer { alpha = dotAlpha }
-                .background(scheme.error, CircleShape)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            "REC " + MeetingStore.clock(elapsed),
-            style = MaterialTheme.typography.labelMedium,
-            color = scheme.onErrorContainer,
-            fontFamily = FontFamily.Monospace,
-        )
     }
 }
 
@@ -796,20 +583,24 @@ private fun ContinuousButton(
     enabled: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    meeting: Boolean = false,
 ) {
     val haptics = LocalHapticFeedback.current
     val scheme = MaterialTheme.colorScheme
-    val container by animateColorAsState(if (listening) scheme.error else scheme.primary, tween(250), label = "btn")
-    val content by animateColorAsState(if (listening) scheme.onError else scheme.onPrimary, tween(250), label = "btnText")
+    // Idle: the icon's cyan → violet gradient. Listening: fades to red.
+    val container by animateColorAsState(if (listening) scheme.error else Color.Transparent, tween(250), label = "btn")
+    val gradientAlpha by animateFloatAsState(if (listening) 0f else 1f, tween(250), label = "btnGradient")
     Button(
         onClick = {
             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             if (listening) onStop() else onStart()
         },
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth().height(56.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = content),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(ButtonDefaults.shape)
+            .drawBehind { drawRect(Brand.Gradient, alpha = gradientAlpha) },
+        colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = Color.White),
     ) {
         AnimatedContent(
             targetState = listening,
@@ -820,22 +611,10 @@ private fun ContinuousButton(
             label = "btnLabel",
         ) { on ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    when {
-                        on -> Icons.Filled.Stop
-                        meeting -> Icons.Filled.Groups
-                        else -> Icons.Filled.Mic
-                    },
-                    null,
-                )
+                Icon(if (on) Icons.Filled.Stop else Icons.Filled.Mic, null)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    when {
-                        on && meeting -> "End meeting"
-                        on -> "Stop"
-                        meeting -> "Start meeting"
-                        else -> "Start listening"
-                    },
+                    if (on) "Stop" else "Start listening",
                     fontSize = 18.sp,
                 )
             }
@@ -854,15 +633,17 @@ private fun PushToTalkButton(
     val release by rememberUpdatedState(onRelease)
     val haptics = LocalHapticFeedback.current
     val scheme = MaterialTheme.colorScheme
+    // Idle: the brand gradient; recording: red.
     val color by animateColorAsState(
         when {
             !enabled -> scheme.surfaceVariant
             recording -> scheme.error
-            else -> scheme.primary
+            else -> Color.Transparent
         },
         tween(200),
         label = "ptt",
     )
+    val gradientAlpha by animateFloatAsState(if (enabled && !recording) 1f else 0f, tween(200), label = "pttGradient")
     val scale by animateFloatAsState(
         if (recording) 1.08f else 1f,
         spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
@@ -876,6 +657,7 @@ private fun PushToTalkButton(
             Modifier
                 .size(108.dp)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
+                .background(Brand.Gradient, CircleShape, alpha = gradientAlpha)
                 .background(color, CircleShape)
                 .pointerInput(enabled) {
                     if (!enabled) return@pointerInput

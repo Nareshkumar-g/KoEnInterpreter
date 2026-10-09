@@ -12,16 +12,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+class TranslationException(message: String) : IOException(message)
 
 /**
  * Free Korean → English translation with Google's ML Kit, entirely on the phone:
  * no account, no API key, no cost, and it works offline once the language model
  * (about 30 MB) has been downloaded.
  *
- * Quality is fine for everyday sentences but more literal than Claude or GPT, and it
- * translates each sentence on its own (it can't use the conversation as context).
+ * It translates each sentence on its own (it can't use the conversation as context).
  */
 object FreeTranslator {
 
@@ -60,20 +62,12 @@ object FreeTranslator {
         ok
     }
 
-    suspend fun translate(korean: String): String {
+    /** Translates one sentence, swapping in the glossary's "Korean = English" terms first. */
+    suspend fun translate(korean: String, glossary: String): String {
         if (!ensureModel()) {
-            throw ApiException("Couldn't download the free translator. Check your internet connection, then tap Retry.")
+            throw TranslationException("Couldn't download the translator. Check your internet connection, then tap Retry.")
         }
-        return client.translate(korean).await()
-    }
-}
-
-/** [TranslationEngine] wrapper so the free translator plugs into the same pipeline. */
-class MlKitTranslator(private val glossary: String) : TranslationEngine {
-    override suspend fun translate(korean: String, context: List<Turn>, onPartial: (String) -> Unit): String {
-        val english = FreeTranslator.translate(Glossary.apply(korean, glossary)).trim()
-        onPartial(english)
-        return english
+        return client.translate(Glossary.apply(korean, glossary)).await().trim()
     }
 }
 

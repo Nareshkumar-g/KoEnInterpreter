@@ -3,6 +3,9 @@
     <style name="Theme.KoEnInterpreter" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Navy behind the app while it opens, so there's no white flash. -->
+        <item name="android:windowBackground">@color/araso_navy</item>
     </style>
     <color name="ic_launcher_background">#0A1028</color>
+    <color name="araso_navy">#070C1F</color>
 </resources>

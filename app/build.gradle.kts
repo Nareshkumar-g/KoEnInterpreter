@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
 
+    // ML Kit pulls in an ancient OkHttp (3.0.0); keep it on a current release.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Free, on-device Korean → English translator (no API key).
     implementation("com.google.mlkit:translate:17.0.3")

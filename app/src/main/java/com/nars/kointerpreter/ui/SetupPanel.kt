@@ -46,11 +46,8 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
@@ -80,22 +77,19 @@ import androidx.compose.ui.unit.dp
 import com.nars.kointerpreter.Mode
 import com.nars.kointerpreter.audio.MicDevice
 import com.nars.kointerpreter.audio.MicKind
-import com.nars.kointerpreter.data.Engine
 
 /**
- * Front-page panel with everything you change often: listening mode, recognition
- * engine and microphone. It folds into a one-line summary while listening so the
+ * Front-page panel with everything you change often: listening mode and
+ * microphone. It folds into a one-line summary while listening so the
  * transcript gets the room, and unfolds again when you stop (or tap it).
  */
 @Composable
 fun SetupPanel(
     mode: Mode,
-    engine: Engine,
     mics: List<MicDevice>,
     micKey: String,
     listening: Boolean,
     onMode: (Mode) -> Unit,
-    onEngine: (Engine) -> Unit,
     onMic: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -131,7 +125,7 @@ fun SetupPanel(
                             Text("Listening setup", style = MaterialTheme.typography.titleSmall)
                         }
                     } else {
-                        Summary(mode, engine, mics, micKey)
+                        Summary(mode, mics, micKey)
                     }
                 }
                 Icon(
@@ -153,56 +147,19 @@ fun SetupPanel(
                         options = listOf(
                             SegOption("Continuous", Icons.Filled.Autorenew),
                             SegOption("Push to talk", Icons.Filled.TouchApp),
-                            SegOption("Meeting", Icons.Filled.Groups),
                         ),
                         selected = Mode.entries.indexOf(mode),
                         onSelect = { onMode(Mode.entries[it]) },
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
-                    AnimatedVisibility(
-                        visible = mode == Mode.MEETING,
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically(),
-                    ) {
-                        Hint("Translates like Continuous and also records the whole meeting. When you end it, the audio and a Korean/English transcript are saved to your phone.")
-                    }
-
-                    Label("Recognition")
-                    // Meetings record the audio themselves, so they always use Noisy-place recognition.
-                    val meeting = mode == Mode.MEETING
-                    val shownEngine = if (meeting) Engine.OPENAI else engine
-                    SlidingSegmented(
-                        options = listOf(
-                            SegOption("Everyday", Icons.Filled.RecordVoiceOver),
-                            SegOption("Noisy place", Icons.Filled.GraphicEq),
-                        ),
-                        selected = if (shownEngine == Engine.BUILT_IN) 0 else 1,
-                        onSelect = { onEngine(if (it == 0) Engine.BUILT_IN else Engine.OPENAI) },
-                        disabled = if (meeting) setOf(0) else emptySet(),
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
-                    AnimatedContent(
-                        targetState = if (meeting) null else engine,
-                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
-                        label = "engineHint",
-                    ) { e ->
-                        Hint(
-                            when (e) {
-                                null -> "Meetings use Noisy-place recognition, because the phone's built-in recognizer can't share the microphone with the recorder."
-                                Engine.BUILT_IN -> "Free, shows Korean live as people speak."
-                                Engine.OPENAI -> "Best with background noise. Uses your OpenAI key."
-                            }
-                        )
-                    }
-
                     Label("Microphone")
                     MicRow(mics, micKey, onMic)
                     AnimatedVisibility(
-                        visible = !meeting && engine == Engine.BUILT_IN && mics.any { it.kind == MicKind.USB },
+                        visible = mics.any { it.kind == MicKind.USB },
                         enter = fadeIn() + expandVertically(),
                         exit = fadeOut() + shrinkVertically(),
                     ) {
-                        Hint("In Everyday mode, Android usually uses a plugged-in USB mic automatically. Noisy place always uses exactly the mic you pick.")
+                        Hint("Android usually uses a plugged-in USB mic automatically, even when Built-in is selected.")
                     }
                 }
             }
@@ -265,7 +222,7 @@ fun SlidingSegmented(
                 .width(segmentWidth)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(50))
-                .background(scheme.primary)
+                .background(Brand.Gradient)
         )
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, option ->
@@ -453,9 +410,9 @@ private fun MicCard(
     }
 }
 
-/** Folded header: "Continuous · Everyday · DJI Mic 2". */
+/** Folded header: "Continuous · DJI Mic 2". */
 @Composable
-private fun Summary(mode: Mode, engine: Engine, mics: List<MicDevice>, micKey: String) {
+private fun Summary(mode: Mode, mics: List<MicDevice>, micKey: String) {
     val mic = mics.firstOrNull { it.key == micKey }
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
@@ -463,21 +420,8 @@ private fun Summary(mode: Mode, engine: Engine, mics: List<MicDevice>, micKey: S
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SummaryPill(
-            when (mode) {
-                Mode.CONTINUOUS -> Icons.Filled.Autorenew
-                Mode.PUSH_TO_TALK -> Icons.Filled.TouchApp
-                Mode.MEETING -> Icons.Filled.Groups
-            },
-            when (mode) {
-                Mode.CONTINUOUS -> "Continuous"
-                Mode.PUSH_TO_TALK -> "Push to talk"
-                Mode.MEETING -> "Meeting"
-            },
-        )
-        val shownEngine = if (mode == Mode.MEETING) Engine.OPENAI else engine
-        SummaryPill(
-            if (shownEngine == Engine.BUILT_IN) Icons.Filled.RecordVoiceOver else Icons.Filled.GraphicEq,
-            if (shownEngine == Engine.BUILT_IN) "Everyday" else "Noisy place",
+            if (mode == Mode.CONTINUOUS) Icons.Filled.Autorenew else Icons.Filled.TouchApp,
+            if (mode == Mode.CONTINUOUS) "Continuous" else "Push to talk",
         )
         SummaryPill(
             when {
